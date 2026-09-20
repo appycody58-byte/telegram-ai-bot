@@ -1,6 +1,6 @@
 import os
 import logging
-import asyncio
+import tempfile
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     Application,
@@ -11,8 +11,6 @@ from telegram.ext import (
 )
 from groq import Groq
 import yt_dlp
-import tempfile
-import os.path
 
 # ---------------- Logging ----------------
 logging.basicConfig(
@@ -25,8 +23,13 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    raise ValueError("TELEGRAM_TOKEN and GROQ_API_KEY must be set as environment variables")
+if not TELEGRAM_TOKEN:
+    logger.error("TELEGRAM_TOKEN is missing!")
+    raise ValueError("TELEGRAM_TOKEN environment variable is missing")
+
+if not GROQ_API_KEY:
+    logger.error("GROQ_API_KEY is missing!")
+    raise ValueError("GROQ_API_KEY environment variable is missing")
 
 client = Groq(api_key=GROQ_API_KEY)
 
@@ -39,8 +42,7 @@ async def ai_reply(user_message: str) -> str:
                     "role": "system",
                     "content": (
                         "You are a powerful, helpful, and intelligent AI assistant. "
-                        "Be clear, useful, and direct. "
-                        "You can help with questions, explanations, coding, ideas, and general tasks."
+                        "Be clear, useful, and direct."
                     )
                 },
                 {"role": "user", "content": user_message}
@@ -56,24 +58,23 @@ async def ai_reply(user_message: str) -> str:
 # ---------------- Commands ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🚀 **Feature-Rich AI Bot is Online!**\n\n"
+        "🚀 *Feature-Rich AI Bot is Online!*\n\n"
         "I can:\n"
         "• Chat with AI intelligence\n"
         "• Download videos/audio\n"
-        "• Manage groups (admin tools)\n"
-        "• Help with many tasks\n\n"
+        "• Manage groups (admin tools)\n\n"
         "Type /help to see all commands."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "**Available Commands:**\n\n"
+        "*Available Commands:*\n\n"
         "/start - Start the bot\n"
         "/help - Show this help\n"
         "/ai <question> - Ask the AI anything\n"
         "/download <url> - Download video/audio\n\n"
-        "**Group Admin Commands** (Bot must be admin):\n"
+        "*Group Admin Commands* (Bot must be admin):\n"
         "/ban - Ban a user (reply to message)\n"
         "/kick - Kick a user\n"
         "/mute - Mute a user\n"
@@ -99,32 +100,35 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     url = context.args[0]
-    await update.message.reply_text("💾 Downloading... Please wait.")
+    status_msg = await update.message.reply_text("💾 Downloading... Please wait.")
 
     try:
         ydl_opts = {
             "format": "best[ext=mp4]/best",
-            "outtmpl": "%(title)s.%(ext)s",
             "quiet": True,
             "noplaylist": True,
-            "max_filesize": 50 * 1024 * 1024,  # 50MB limit for free tiers
+            "max_filesize": 49 * 1024 * 1024,  # under 50MB
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            ydl_opts["outtmpl"] = os.path.join(tmpdir, "%(title)s.%(ext)s")
+            ydl_opts["outtmpl"] = os.path.join(tmpdir, "%(title).100s.%(ext)s")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 filename = ydl.prepare_filename(info)
 
-            # Send the file
             with open(filename, "rb") as f:
-                await update.message.reply_video(video=f, caption=info.get("title", "Downloaded"))
+                await update.message.reply_video(
+                    video=f,
+                    caption=info.get("title", "Downloaded")[:1000]
+                )
+
+        await status_msg.delete()
 
     except Exception as e:
         logger.error(f"Download error: {e}")
-        await update.message.reply_text(
-            f"❌ Download failed.\nPossible reasons: private video, too large, or unsupported site.\nError: {str(e)[:200]}"
+        await status_msg.edit_text(
+            f"❌ Download failed.\nPossible reasons: private video, too large, or unsupported site."
         )
 
 # ---------------- Group Admin Tools ----------------
@@ -147,7 +151,7 @@ async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.message.reply_to_message.from_user
         await context.bot.ban_chat_member(update.effective_chat.id, user.id)
         await context.bot.unban_chat_member(update.effective_chat.id, user.id)
-        await update.message.reply_text(f"🐎 Kicked {user.full_name}")
+        await update.message.reply_text(f"Kicked {user.full_name}")
     except Exception as e:
         await update.message.reply_text(f"Failed to kick: {e}")
 
@@ -195,25 +199,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Main ----------------
 def main():
+    logger.info("Starting bot...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("ai", ai_command))
     app.add_handler(CommandHandler("download", download_command))
 
-    # Admin
     app.add_handler(CommandHandler("ban", ban))
     app.add_handler(CommandHandler("kick", kick))
     app.add_handler(CommandHandler("mute", mute))
     app.add_handler(CommandHandler("unmute", unmute))
     app.add_handler(CommandHandler("warn", warn))
 
-    # Normal text
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Feature-rich bot is starting...")
+    logger.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
